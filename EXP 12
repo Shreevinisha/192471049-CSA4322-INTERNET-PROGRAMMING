@@ -1,0 +1,145 @@
+<?php
+$servername="localhost";
+$username="root";
+$password="";
+$dbname="blossomgifts";
+$conn=new mysqli($servername,$username,$password,$dbname);
+if($conn->connect_error) die("Connection failed: ".$conn->connect_error);
+session_start();
+
+$action=$_GET['action'] ?? '';
+
+// User registration
+if($action=='register' && $_SERVER['REQUEST_METHOD']=='POST'){
+    $name=$_POST['name']; $email=$_POST['email']; $pass=password_hash($_POST['password'],PASSWORD_DEFAULT);
+    $check=$conn->query("SELECT * FROM users WHERE email='$email'");
+    if($check->num_rows>0){ echo "Email already exists"; exit; }
+    $stmt=$conn->prepare("INSERT INTO users(name,email,password) VALUES(?,?,?)");
+    $stmt->bind_param("sss",$name,$email,$pass); $stmt->execute();
+    echo "Registered! <a href='?page=login'>Login</a>"; exit;
+}
+
+// User login
+if($action=='login' && $_SERVER['REQUEST_METHOD']=='POST'){
+    $email=$_POST['email']; $pass=$_POST['password'];
+    $res=$conn->query("SELECT * FROM users WHERE email='$email'");
+    if($u=$res->fetch_assoc()){
+        if(password_verify($pass,$u['password'])){
+            $_SESSION['user_id']=$u['id']; $_SESSION['name']=$u['name']; header("Location:?page=home"); exit;
+        } else {
+            echo "Invalid password"; exit;
+        }
+    } else {
+        echo "Email not registered"; exit;
+    }
+}
+
+// Add to cart
+if($action=='add_cart' && isset($_SESSION['user_id'])){
+    $uid=$_SESSION['user_id']; $pid=$_GET['product_id']; $qty=$_POST['quantity'] ?? 1;
+    $check=$conn->query("SELECT * FROM cart WHERE user_id=$uid AND product_id=$pid");
+    if($check->num_rows>0){
+        $conn->query("UPDATE cart SET quantity=quantity+$qty WHERE user_id=$uid AND product_id=$pid");
+    } else {
+        $conn->query("INSERT INTO cart(user_id,product_id,quantity) VALUES($uid,$pid,$qty)");
+    }
+    header("Location:?page=cart"); exit;
+}
+
+// Checkout
+if($action=='checkout' && isset($_SESSION['user_id'])){
+    $uid=$_SESSION['user_id'];
+    $res=$conn->query("SELECT c.*,p.price FROM cart c JOIN products p ON c.product_id=p.id WHERE c.user_id=$uid");
+    $total=0;
+    while($r=$res->fetch_assoc()) $total+=$r['price']*$r['quantity'];
+    $conn->query("INSERT INTO orders(user_id,total) VALUES($uid,$total)");
+    $conn->query("DELETE FROM cart WHERE user_id=$uid");
+    echo "Order placed! <a href='?page=orders'>My Orders</a>"; exit;
+}
+
+$page=$_GET['page'] ?? 'home';
+?>
+<!DOCTYPE html>
+<html>
+<head>
+<title>BlossomGifts</title>
+<style>
+body{font-family:Arial;text-align:center;background:#f0f0f0;}
+form,div.box{background:#fff;padding:20px;margin:20px auto;width:400px;border-radius:10px;box-shadow:0 0 5px gray;}
+input,textarea,button,select{padding:8px;margin:5px;width:90%;}
+table{margin:auto;border-collapse:collapse;width:90%;}
+td,th{border:1px solid #ccc;padding:8px;}
+a{color:blue;text-decoration:none;}
+</style>
+</head>
+<body>
+<h2>🌸 BlossomGifts</h2>
+<?php
+if(isset($_GET['logout'])){ session_destroy(); header("Location:?"); }
+
+// Navigation
+if(isset($_SESSION['user_id'])){
+    echo "<p>Welcome ".$_SESSION['name']." | <a href='?page=home'>Home</a> | <a href='?page=cart'>Cart</a> | <a href='?page=orders'>My Orders</a> | <a href='?logout=1'>Logout</a></p>";
+} else {
+    echo "<p><a href='?page=register'>Register</a> | <a href='?page=login'>Login</a></p>";
+}
+
+// Pages
+if($page=='register'){
+    echo "<form method='post' action='?action=register'>
+    <h3>Register</h3>
+    <input type='text' name='name' placeholder='Name' required><br>
+    <input type='email' name='email' placeholder='Email' required><br>
+    <input type='password' name='password' placeholder='Password' required><br>
+    <button type='submit'>Register</button></form>";
+}
+
+if($page=='login'){
+    echo "<form method='post' action='?action=login'>
+    <h3>Login</h3>
+    <input type='email' name='email' placeholder='Email' required><br>
+    <input type='password' name='password' placeholder='Password' required><br>
+    <button type='submit'>Login</button></form>";
+}
+
+if($page=='home'){
+    $products=$conn->query("SELECT * FROM products");
+    echo "<h3>Available Gifts & Flowers</h3>";
+    while($p=$products->fetch_assoc()){
+        echo "<div class='box'><b>{$p['name']}</b><br>Category: {$p['category']}<br>Price: {$p['price']}<br>Stock: {$p['stock']}<br>Description: {$p['description']}<br>";
+        if(isset($_SESSION['user_id'])){
+            echo "<form method='post' action='?action=add_cart&product_id={$p['id']}'>
+            <input type='number' name='quantity' value='1' min='1' max='{$p['stock']}'><br>
+            <button type='submit'>Add to Cart</button></form>";
+        } else {
+            echo "<a href='?page=login'>Login to Buy</a>";
+        }
+        echo "</div>";
+    }
+}
+
+if($page=='cart' && isset($_SESSION['user_id'])){
+    $uid=$_SESSION['user_id'];
+    $res=$conn->query("SELECT c.*,p.name,p.price FROM cart c JOIN products p ON c.product_id=p.id WHERE c.user_id=$uid");
+    echo "<h3>My Cart</h3><table><tr><th>Product</th><th>Price</th><th>Quantity</th><th>Total</th></tr>";
+    $total=0;
+    while($r=$res->fetch_assoc()){
+        $line=$r['price']*$r['quantity']; $total+=$line;
+        echo "<tr><td>{$r['name']}</td><td>{$r['price']}</td><td>{$r['quantity']}</td><td>$line</td></tr>";
+    }
+    echo "<tr><td colspan='3'>Total</td><td>$total</td></tr></table>";
+    echo "<form method='post' action='?action=checkout'><button type='submit'>Checkout</button></form>";
+}
+
+if($page=='orders' && isset($_SESSION['user_id'])){
+    $uid=$_SESSION['user_id'];
+    $res=$conn->query("SELECT * FROM orders WHERE user_id=$uid ORDER BY order_date DESC");
+    echo "<h3>My Orders</h3><table><tr><th>Order ID</th><th>Date</th><th>Total</th></tr>";
+    while($o=$res->fetch_assoc()){
+        echo "<tr><td>{$o['id']}</td><td>{$o['order_date']}</td><td>{$o['total']}</td></tr>";
+    }
+    echo "</table>";
+}
+?>
+</body>
+</html>
